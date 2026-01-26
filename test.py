@@ -1,115 +1,152 @@
-from algorithms.pso import PSO
-from algorithms.gmo import GMO
-from algorithms.de import DE
-from visualisation.visualize_1d import Optimizer1DVisualizer
-import random
 import numpy as np
+import random
+import matplotlib.pyplot as plt
 
-import math
+from algorithms.gmo import GMO
+from algorithms.pso import PSO
+from algorithms.de import DE
 
-def rastrigin(x):
-    return x[0]**2 - 10 * np.cos(2 * np.pi * x[0]) + 10
+# ==============================
+# Problem Configuration
+# ==============================
+DIM = 50                  # Resource units
+BOUNDS = [(0.0, 1.0)] * DIM
+TOTAL_RESOURCE = 60
+
+     # System capacity
+NOISE_STD = 0.15
+MIN_UTILIZATION = 0.4 * TOTAL_RESOURCE  # 48
 
 
-def noisy_rastrigin(x):
-    return rastrigin(x) + random.gauss(0, 0.1)
+# ==============================
+# Objective Function
+# ==============================
+def resource_allocation_objective(x):
+    x = np.array(x)
 
-def controlled_noisy_rastrigin(x, sigma=0.5):
-    """
-    Temporally unstable but spatially smooth noise
-    Breaks PSO memory, preserves GMO statistics
-    """
+    total_used = x.sum()
+    imbalance = np.std(x)
+    geometric_balance = np.prod(x + 1e-6)**(1 / DIM)
+    utilization_reward = (total_used / TOTAL_RESOURCE)
 
-    base = 10 * len(x)
-    base += sum(
-        xi**2 - 10 * np.cos(2 * np.pi * xi)
-        for xi in x
+
+    # Hard feasibility constraints
+    overuse_violation = max(0, total_used - TOTAL_RESOURCE)
+    underuse_violation = max(0, MIN_UTILIZATION - total_used)
+
+    violation = overuse_violation + underuse_violation
+
+    # Soft stability penalties
+    imbalance_penalty = imbalance ** 2
+
+    noise = random.gauss(0, NOISE_STD)
+
+    f = (
+        -geometric_balance
+        - 0.5 * utilization_reward 
+        + 0.8 * imbalance_penalty
+        + 5.0 * violation**2
+        + noise
     )
 
-    # smooth spatial noise (same nearby x → similar noise)
-    spatial_noise = sigma * np.sin(5 * x[0])
+    return f, violation
 
-    # small random jitter (NOT heavy-tailed)
-    temporal_noise = random.gauss(0, sigma * 0.15)
 
-    return base + spatial_noise + temporal_noise
-
-def simple_shifted_quadratic(x):
+# ==============================
+# Run Optimizers
+# ==============================
+def run_optimizer(optimizer_class, name, dim, pop_size, iters, bounds, obj_fn):
     """
-    Simple 1D convex function
-    Global minimum is NOT zero
+    Initialize and run optimizer, return best fitness history.
+    
+    Args:
+        optimizer_class: PSO, DE, or GMO class
+        name: Algorithm name (for display)
+        dim: Problem dimensionality
+        pop_size: Population size
+        iters: Number of iterations
+        bounds: Search space bounds
+        obj_fn: Objective function
+    
+    Returns:
+        history: Best fitness per iteration
     """
+    optimizer = optimizer_class(
+        dim=dim,
+        pop_size=pop_size,
+        iters=iters,
+        bounds=bounds,
+        obj_fn=obj_fn
+    )
+    
+    optimizer.run()  # Execute optimization
+    x, f, v = optimizer.best_solution()  # Get best solution
 
-    return (x[0] - 2)**2 + 3
+    x = np.array(x)
 
+    total = x.sum()
+    mean = x.mean()
+    std = x.std()
+    cv = std / mean
 
-def sinusoidal_with_unique_global_min(x):
-    """
-    Multiple local minima (sinusoidal ripples)
-    One unique global minimum
-    Global minimum is NOT at zero
-    """
+    print(f"Total Used Capacity: {total:.2f}")
+    print(f"Min Allocation:      {x.min():.2f}")
+    print(f"Max Allocation:      {x.max():.2f}")
+    print(f"Mean Allocation:     {mean:.2f}")
+    print(f"Std Deviation:       {std:.2f}")
+    print(f"Coeff of Variation:  {cv:.2f}")
 
-    return (np.sin(1/x[0]))
+    
+    print(f"{name:5} | Best Objective: {f:10.6f} | Constraint Violation: {v:10.6e}")
+    
+    return optimizer.history_best
 
-def shifted_rastrigin(x, shift=-2.5):
-    """
-    Rastrigin function with global minimum shifted to the left
-    """
-
-    z = x[0] - shift
-    return z**2 - 10 * np.cos(2 * np.pi * z) + 10
-
-
-def rosenbrock(x, a=1, b=100):
-    """
-    Rosenbrock function (banana function)
-    Global minimum at x = [a, a^2]
-    Minimum value = 0
-    """
-
-    return (a - x[0])**2 + b * (10 - x[0]**2)**2
-
-def de_breaker_gmo_survivor(x, sigma=0.4):
-    """
-    Designed to break Differential Evolution
-    but remain solvable by GMO-style averaging methods
-    """
-
-    # Global convex basin (truth only visible in expectation)
-    base = (x[0] + 2.0)**2 + 5
-
-    # High-frequency deception: breaks DE difference vectors
-    deceptive_ripples = 1.5 * np.sin(18 * x[0])
-
-    # Spatially smooth noise (correlated in x)
-    spatial_noise = sigma * np.sin(7 * x[0] + 0.3)
-
-    # Small temporal noise (kills pairwise comparisons)
-    temporal_noise = random.gauss(0, sigma * 0.2)
-
-    return base + deceptive_ripples + spatial_noise + temporal_noise
-
-
-bounds = [(-5, 5)]
-
-pso =GMO(
-    dim=1,
-    pop_size=40,
-    iters=100,
-    bounds=bounds,
-    obj_fn=de_breaker_gmo_survivor
-)
-
-pso.run()
-
-viz = Optimizer1DVisualizer(
-    history_positions=pso.history_positions,
-    obj_fn=de_breaker_gmo_survivor,
-    bounds=bounds,
-    title="PSO on f(x) = x²"
-)
-
-
-
-viz.animate()
+# ==============================
+# Execute Experiments
+# ==============================
+if __name__ == "__main__":
+    
+    print("\n" + "="*70)
+    print("RESOURCE ALLOCATION OPTIMIZATION (Stability Under Noise)")
+    print("="*70 + "\n")
+    
+    print(f"Configuration:")
+    print(f"  Dimensions:      {DIM}")
+    print(f"  Population:      40")
+    print(f"  Iterations:      150")
+    print(f"  Noise Std Dev:   {NOISE_STD}")
+    print("\n" + "-"*70)
+    print("Algorithm | Best Objective | Constraint Violation")
+    print("-"*70 + "\n")
+    
+    # Run all three optimizers
+    gmo_hist = run_optimizer(
+        GMO, "GMO", DIM, 40, 150, BOUNDS, resource_allocation_objective
+    )
+    
+    pso_hist = run_optimizer(
+        PSO, "PSO", DIM, 40, 150, BOUNDS, resource_allocation_objective
+    )
+    
+    de_hist = run_optimizer(
+        DE, "DE", DIM, 40, 150, BOUNDS, resource_allocation_objective
+    )
+    
+    print("\n" + "="*70 + "\n")
+    
+    # ==============================
+    # Plot Convergence
+    # ==============================
+    plt.figure(figsize=(12, 6))
+    
+    plt.plot(gmo_hist, label="GMO", linewidth=2.5, color="blue")
+    plt.plot(pso_hist, label="PSO", linewidth=2.5, color="red", linestyle="--")
+    plt.plot(de_hist, label="DE", linewidth=2.5, color="green", linestyle=":")
+    
+    plt.xlabel("Iteration", fontsize=12)
+    plt.ylabel("Best Objective Value", fontsize=12)
+    plt.title("Resource Allocation Optimization\n(Stochastic Fitness, 20D)", fontsize=14)
+    plt.legend(fontsize=11, loc="upper right")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()

@@ -18,7 +18,7 @@ def stochastic_rastrigin_35d(x):
     """
     A = 10
     x_arr = np.array(x)
-    n = 35  # fixed dimensionality
+    n = 20  # fixed dimensionality
 
     # Base Rastrigin
     base = A * n + np.sum(x_arr**2 - A * np.cos(2 * np.pi * x_arr))

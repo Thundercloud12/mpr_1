@@ -231,6 +231,7 @@ class GMO:
             self.agents,
             key=lambda a: (a.violation_best, a.f_best)
         )
+        
         return best_agent.x_best, best_agent.f_best, best_agent.violation_best
     
     def run(self):
