@@ -21,13 +21,29 @@ class GMOAgent:
     
     def evaluate(self):
         f, violation = self.obj_fn(self.x)
-        
-        if f < self.f_best or (f == self.f_best and violation < self.violation_best):
+
+        # Deb's rules
+        if self.violation_best == 0 and violation == 0:
+            # Both feasible → minimize objective
+            if f < self.f_best:
+                self.f_best = f
+                self.x_best = self.x[:]
+
+        elif violation == 0 and self.violation_best > 0:
+            # New feasible beats old infeasible
             self.f_best = f
-            self.violation_best = violation
+            self.violation_best = 0
             self.x_best = self.x[:]
-        
+
+        elif violation > 0 and self.violation_best > 0:
+            # Both infeasible → minimize violation
+            if violation < self.violation_best:
+                self.f_best = f
+                self.violation_best = violation
+                self.x_best = self.x[:]
+
         return f, violation
+
     
     def update_velocity(self, v_new):
         self.v = v_new[:]
@@ -51,10 +67,41 @@ class GMO:
         
         self.history_best = []
         self.history_positions = []
+        self.current_iteration = 0
+
+    def step(self):
+        if self.current_iteration >= self.max_iters:
+            return
+        
+        w_control = 1.0 - (self.current_iteration / self.max_iters)
+        
+
+        mu_t, sigma_t = self.compute_statistics()
+        MF = self.compute_membership_functions(mu_t, sigma_t)
+        DFI = self.compute_dual_fitness_index(MF)
+        
+
+        elites = self.select_elite_agents(DFI, self.current_iteration)
+        guides = self.generate_guides(DFI, elites)
+
+        std_dims, std_max = self.compute_dimension_std()
+        mutated_guides = self.mutate_guides(guides, std_dims, std_max, w_control)
+        
+
+        self.update_positions(mutated_guides, w_control)
+        self.evaluate_population()
+        self.record_history()
+        
+        self.current_iteration += 1
 
     def compute_statistics(self):
      
-        fitness_values = [agent.f_best for agent in self.agents]
+        fitness_values = [
+            agent.f_best if agent.violation_best == 0
+            else agent.f_best + 1e6 * agent.violation_best
+            for agent in self.agents
+        ]
+
         
         mu_t = sum(fitness_values) / self.pop_size
         variance = sum((f - mu_t)**2 for f in fitness_values) / self.pop_size
@@ -91,16 +138,19 @@ class GMO:
 
     def select_elite_agents(self, DFI, iteration):
 
-        n_best_count = int(
-            self.pop_size - (self.pop_size - 2) * (iteration / self.max_iters)
-        )
+        progress = iteration / self.max_iters
+        n_best_count = int(2 + (self.pop_size - 2) * (1 - progress))
+
         n_best_count = max(n_best_count, 2)  
         
         sorted_indices = sorted(
             range(self.pop_size),
-            key=lambda i: DFI[i],
-            reverse=True
+            key=lambda i: (
+                self.agents[i].violation_best,
+                -DFI[i]
+            )
         )
+
         
         elites = sorted_indices[:n_best_count]
         return elites
@@ -117,6 +167,9 @@ class GMO:
             for elite_idx in elites:
                 if elite_idx == i:
                     continue  
+
+                if self.agents[elite_idx].violation_best > 0:
+                    continue
                 
                 weight = DFI[elite_idx]
                 sum_weights += weight
@@ -204,26 +257,9 @@ class GMO:
     
 
     def optimize(self):
-
-        for iteration in range(self.max_iters):
-            w_control = 1.0 - (iteration / self.max_iters)
-            
-
-            mu_t, sigma_t = self.compute_statistics()
-            MF = self.compute_membership_functions(mu_t, sigma_t)
-            DFI = self.compute_dual_fitness_index(MF)
-            
-
-            elites = self.select_elite_agents(DFI, iteration)
-            guides = self.generate_guides(DFI, elites)
-
-            std_dims, std_max = self.compute_dimension_std()
-            mutated_guides = self.mutate_guides(guides, std_dims, std_max, w_control)
-            
-
-            self.update_positions(mutated_guides, w_control)
-            self.evaluate_population()
-            self.record_history()
+        self.current_iteration = 0
+        for _ in range(self.max_iters):
+            self.step()
     
 
     def best_solution(self):
