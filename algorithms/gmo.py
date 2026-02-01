@@ -116,7 +116,7 @@ class GMO:
         
         MF = []
         for agent in self.agents:
-            mf_value = 1.0 / (1.0 + math.exp(-a_param * (agent.f_best - mu_t)))
+            mf_value = 1.0 / (1.0 + math.exp(a_param * (agent.f_best - mu_t)))
             MF.append(mf_value)
         
         return MF
