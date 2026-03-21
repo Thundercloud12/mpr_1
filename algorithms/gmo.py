@@ -1,42 +1,101 @@
-import math
-import random
+class RNG:
+    def __init__(self, seed=123456):
+        self.seed = seed
 
+    def rand(self):
+        # Linear Congruential Generator
+        self.seed = (1103515245 * self.seed + 12345) % (2**31)
+        return self.seed / (2**31)
+
+    def uniform(self, a, b):
+        return a + (b - a) * self.rand()
+
+    def gauss(self):
+        # Box-Muller (approx, using own log)
+        u1 = self.rand() + 1e-10
+        u2 = self.rand() + 1e-10
+        return sqrt(-2 * ln(u1)) * cos(2 * 3.1415926535 * u2)
+
+
+# ---- BASIC MATH APPROX ----
+
+def abs_val(x):
+    return x if x >= 0 else -x
+
+
+def sqrt(x):
+    if x <= 0:
+        return 0
+    guess = x
+    for _ in range(10):
+        guess = 0.5 * (guess + x / guess)
+    return guess
+
+
+def exp(x):
+    # Taylor approx
+    term = 1.0
+    result = 1.0
+    for i in range(1, 15):
+        term *= x / i
+        result += term
+    return result
+
+
+def ln(x):
+    # Simple log approximation
+    n = 100
+    result = 0.0
+    for i in range(1, n):
+        result += (1.0 / i) * ((x - 1) / x) ** i
+    return result
+
+
+def cos(x):
+    # Taylor series
+    term = 1.0
+    result = 1.0
+    sign = -1
+    for i in range(2, 12, 2):
+        term *= x * x / (i * (i - 1))
+        result += sign * term
+        sign *= -1
+    return result
+
+
+# --------- GMO AGENT ---------
 
 class GMOAgent:
-    def __init__(self, dim, bounds, obj_fn):
+    def __init__(self, dim, bounds, obj_fn, rng):
         self.dim = dim
         self.bounds = bounds
         self.obj_fn = obj_fn
-        
-        
-        self.x = [random.uniform(bounds[d][0], bounds[d][1]) for d in range(dim)]
+        self.rng = rng
+
+        self.x = [rng.uniform(bounds[d][0], bounds[d][1]) for d in range(dim)]
         self.v = [0.0 for _ in range(dim)]
-        
-        
+
         self.x_best = self.x[:]
-        self.f_best = float('inf')
-        self.violation_best = float('inf')
-        
+        self.f_best = 1e18
+        self.violation_best = 1e18
+
         self.evaluate()
-    
+
     def evaluate(self):
         f, violation = self.obj_fn(self.x)
 
         # Deb's rules
-        if self.violation_best == 0 and violation == 0:
-            # Both feasible → minimize objective
+        if violation == 0 and self.violation_best == 0:
             if f < self.f_best:
                 self.f_best = f
                 self.x_best = self.x[:]
 
         elif violation == 0 and self.violation_best > 0:
-            # New feasible beats old infeasible
             self.f_best = f
             self.violation_best = 0
             self.x_best = self.x[:]
 
         elif violation > 0 and self.violation_best > 0:
-            # Both infeasible → minimize violation
             if violation < self.violation_best:
                 self.f_best = f
                 self.violation_best = violation
@@ -44,231 +103,176 @@ class GMOAgent:
 
         return f, violation
 
-    
     def update_velocity(self, v_new):
         self.v = v_new[:]
-    
+
     def update_position(self, x_new):
         for d in range(self.dim):
-            self.x[d] = max(min(x_new[d], self.bounds[d][1]), self.bounds[d][0])
+            low, high = self.bounds[d]
+            val = x_new[d]
+            if val < low:
+                val = low
+            if val > high:
+                val = high
+            self.x[d] = val
 
+
+# --------- GMO ---------
 
 class GMO:
-    
     def __init__(self, dim, pop_size, iters, bounds, obj_fn):
         self.dim = dim
         self.pop_size = pop_size
         self.max_iters = iters
         self.bounds = bounds
         self.obj_fn = obj_fn
-        
 
-        self.agents = [GMOAgent(dim, bounds, obj_fn) for _ in range(pop_size)]
-        
-        self.history_best = []
-        self.history_positions = []
+        self.rng = RNG()
+
+        self.agents = [
+            GMOAgent(dim, bounds, obj_fn, self.rng)
+            for _ in range(pop_size)
+        ]
+
         self.current_iteration = 0
+
+    def compute_statistics(self):
+        fitness = []
+        for a in self.agents:
+            if a.violation_best == 0:
+                fitness.append(a.f_best)
+            else:
+                fitness.append(a.f_best + 1e6 * a.violation_best)
+
+        mu = sum(fitness) / self.pop_size
+
+        var = 0.0
+        for f in fitness:
+            var += (f - mu) * (f - mu)
+        var /= self.pop_size
+
+        sigma = sqrt(var) + 1e-10
+        return mu, sigma
+
+    def compute_membership(self, mu, sigma):
+        MF = []
+        a_param = -4.0 / (sigma + 1e-10)
+
+        for agent in self.agents:
+            val = agent.f_best
+            z = a_param * (val - mu)
+            mf = 1.0 / (1.0 + exp(-z))
+            MF.append(mf)
+
+        return MF
+
+    def compute_dfi(self, MF):
+        # log-based stable computation
+        log_total = 0.0
+        for m in MF:
+            log_total += ln(m + 1e-10)
+
+        DFI = []
+        for m in MF:
+            val = exp(log_total - ln(m + 1e-10))
+            DFI.append(val)
+
+        return DFI
+
+    def select_elites(self, DFI):
+        idx = list(range(self.pop_size))
+
+        idx.sort(key=lambda i: (
+            self.agents[i].violation_best,
+            -DFI[i]
+        ))
+
+        k = max(2, self.pop_size // 3)
+        return idx[:k]
+
+    def generate_guides(self, DFI, elites):
+        guides = []
+
+        for i in range(self.pop_size):
+            sum_w = 0.0
+            guide = [0.0] * self.dim
+
+            for e in elites:
+                if self.agents[e].violation_best > 0:
+                    continue
+
+                w = DFI[e]
+                sum_w += w
+
+                for d in range(self.dim):
+                    guide[d] += w * self.agents[e].x_best[d]
+
+            if sum_w == 0:
+                guides.append(self.agents[i].x[:])  # fallback
+            else:
+                guides.append([g / sum_w for g in guide])
+
+        return guides
+
+    def mutate(self, guides, w):
+        mutated = []
+
+        for g in guides:
+            new = []
+            for d in range(self.dim):
+                noise = (self.rng.rand() - 0.5) * w
+                new.append(g[d] + noise)
+            mutated.append(new)
+
+        return mutated
+
+    def update(self, guides, w):
+        for i in range(self.pop_size):
+            new_v = []
+            new_x = []
+
+            for d in range(self.dim):
+                phi = 1.0 + (2 * self.rng.rand() - 1.0) * w
+
+                v = w * self.agents[i].v[d] + phi * (guides[i][d] - self.agents[i].x[d])
+                x = self.agents[i].x[d] + v
+
+                new_v.append(v)
+                new_x.append(x)
+
+            self.agents[i].update_velocity(new_v)
+            self.agents[i].update_position(new_x)
 
     def step(self):
         if self.current_iteration >= self.max_iters:
             return
-        
-        w_control = 1.0 - (self.current_iteration / self.max_iters)
-        
 
-        mu_t, sigma_t = self.compute_statistics()
-        MF = self.compute_membership_functions(mu_t, sigma_t)
-        DFI = self.compute_dual_fitness_index(MF)
-        
+        w = 1.0 - (self.current_iteration / self.max_iters)
 
-        elites = self.select_elite_agents(DFI, self.current_iteration)
+        mu, sigma = self.compute_statistics()
+        MF = self.compute_membership(mu, sigma)
+        DFI = self.compute_dfi(MF)
+
+        elites = self.select_elites(DFI)
         guides = self.generate_guides(DFI, elites)
+        guides = self.mutate(guides, w)
 
-        std_dims, std_max = self.compute_dimension_std()
-        mutated_guides = self.mutate_guides(guides, std_dims, std_max, w_control)
-        
+        self.update(guides, w)
 
-        self.update_positions(mutated_guides, w_control)
-        self.evaluate_population()
-        self.record_history()
-        
+        for a in self.agents:
+            a.evaluate()
+
         self.current_iteration += 1
 
-    def compute_statistics(self):
-     
-        fitness_values = [
-            agent.f_best if agent.violation_best == 0
-            else agent.f_best + 1e6 * agent.violation_best
-            for agent in self.agents
-        ]
-
-        
-        mu_t = sum(fitness_values) / self.pop_size
-        variance = sum((f - mu_t)**2 for f in fitness_values) / self.pop_size
-        sigma_t = math.sqrt(variance) + 1e-10  # Avoid division by zero
-        
-        return mu_t, sigma_t
-    
-
-    def compute_membership_functions(self, mu_t, sigma_t):
-  
-        a_param = -4 / (sigma_t * math.sqrt(math.e))
-        
-        MF = []
-        for agent in self.agents:
-            mf_value = 1.0 / (1.0 + math.exp(-a_param * (agent.f_best - mu_t)))
-            MF.append(mf_value)
-        
-        return MF
-    
-
-    def compute_dual_fitness_index(self, MF):
-
-        total_prod = 1.0
-        for m in MF:
-            total_prod *= m
-        
-        DFI = []
-        for m in MF:
-            dfi_value = total_prod / (m + 1e-10)  
-            DFI.append(dfi_value)
-        
-        return DFI
-    
-
-    def select_elite_agents(self, DFI, iteration):
-
-        progress = iteration / self.max_iters
-        n_best_count = int(2 + (self.pop_size - 2) * (1 - progress))
-
-        n_best_count = max(n_best_count, 2)  
-        
-        sorted_indices = sorted(
-            range(self.pop_size),
-            key=lambda i: (
-                self.agents[i].violation_best,
-                -DFI[i]
-            )
-        )
-
-        
-        elites = sorted_indices[:n_best_count]
-        return elites
-    
-
-    def generate_guides(self, DFI, elites):
-
-        guides = []
-        
-        for i in range(self.pop_size):
-            sum_weighted_pos = [0.0] * self.dim
-            sum_weights = 0.0
-
-            for elite_idx in elites:
-                if elite_idx == i:
-                    continue  
-
-                if self.agents[elite_idx].violation_best > 0:
-                    continue
-                
-                weight = DFI[elite_idx]
-                sum_weights += weight
-
-                for d in range(self.dim):
-                    sum_weighted_pos[d] += weight * self.agents[elite_idx].x_best[d]
-            
-            # Normalize by total weight
-            guide = [
-                pos / (sum_weights + 1e-10) for pos in sum_weighted_pos
-            ]
-            guides.append(guide)
-        
-        return guides
-
-    def compute_dimension_std(self):
-
-        std_dims = []
-        
-        for d in range(self.dim):
-
-            col = [self.agents[i].x_best[d] for i in range(self.pop_size)]
-            
-            mean_col = sum(col) / self.pop_size
-            var_col = sum((x - mean_col)**2 for x in col) / self.pop_size
-            std_col = math.sqrt(var_col)
-            
-            std_dims.append(std_col)
-        
-        std_max = max(std_dims) if std_dims else 1e-10
-        return std_dims, std_max
-
-    def mutate_guides(self, guides, std_dims, std_max, w_control):
-   
-        mutated_guides = []
-        
-        for guide in guides:
-            mutated_guide = []
-            for d in range(self.dim):
-                mutation = w_control * random.gauss(0, 1) * (std_max - std_dims[d])
-                mutated_value = guide[d] + mutation
-                mutated_guide.append(mutated_value)
-            
-            mutated_guides.append(mutated_guide)
-        
-        return mutated_guides
-
-    def update_positions(self, mutated_guides, w_control):
-
-        for i in range(self.pop_size):
-
-            phi = 1.0 + (2.0 * random.random() - 1.0) * w_control
-            
-            new_velocity = []
-            new_position = []
-            
-            for d in range(self.dim):
-
-                v_new = (w_control * self.agents[i].v[d] +
-                         phi * (mutated_guides[i][d] - self.agents[i].x[d]))
-                
-                new_velocity.append(v_new)
-
-                x_new = self.agents[i].x[d] + v_new
-                new_position.append(x_new)
-            
-            # Apply updates
-            self.agents[i].update_velocity(new_velocity)
-            self.agents[i].update_position(new_position)
-    
-
-    def evaluate_population(self):
-
-        for agent in self.agents:
-            agent.evaluate()
-    
-
-    def record_history(self):
-
-        best_fitness = min(agent.f_best for agent in self.agents)
-        self.history_best.append(best_fitness)
-        
-        positions = [agent.x[:] for agent in self.agents]
-        self.history_positions.append(positions)
-    
-
-    def optimize(self):
-        self.current_iteration = 0
+    def run(self):
         for _ in range(self.max_iters):
             self.step()
-    
 
     def best_solution(self):
-        best_agent = min(
-            self.agents,
-            key=lambda a: (a.violation_best, a.f_best)
-        )
-        
-        return best_agent.x_best, best_agent.f_best, best_agent.violation_best
-    
-    def run(self):
-        self.optimize()
+        best = self.agents[0]
+        for a in self.agents:
+            if (a.violation_best < best.violation_best or
+               (a.violation_best == best.violation_best and a.f_best < best.f_best)):
+                best = a
+
+        return best.x_best, best.f_best, best.violation_best
