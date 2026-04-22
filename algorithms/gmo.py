@@ -107,14 +107,16 @@ class GMOAgent:
 # --------- GMO ---------
 
 class GMO:
-    def __init__(self, dim, pop_size, iters, bounds, obj_fn):
+    def __init__(self, dim, pop_size, iters, bounds, obj_fn, seed=123456, track_history=True):
         self.dim = dim
         self.pop_size = pop_size
         self.max_iters = iters
         self.bounds = bounds
         self.obj_fn = obj_fn
+        self.seed = seed
+        self.track_history = track_history
 
-        self.rng = RNG()
+        self.rng = RNG(seed)
 
         self.agents = [
             GMOAgent(dim, bounds, obj_fn, self.rng)
@@ -122,6 +124,46 @@ class GMO:
         ]
 
         self.current_iteration = 0
+        self.history = []
+        self.last_metrics = None
+
+    def _feasible_count(self):
+        return sum(1 for a in self.agents if a.violation_best == 0)
+
+    def _population_diversity(self):
+        if self.pop_size == 0 or self.dim == 0:
+            return 0.0
+
+        total_std = 0.0
+        for d in range(self.dim):
+            mean_d = sum(a.x[d] for a in self.agents) / self.pop_size
+            var_d = 0.0
+            for a in self.agents:
+                diff = a.x[d] - mean_d
+                var_d += diff * diff
+            var_d /= self.pop_size
+            total_std += sqrt(var_d)
+
+        return total_std / self.dim
+
+    def _mean_abs_velocity(self):
+        if self.pop_size == 0 or self.dim == 0:
+            return 0.0
+
+        total = 0.0
+        for a in self.agents:
+            for v in a.v:
+                total += abs_val(v)
+
+        return total / (self.pop_size * self.dim)
+
+    def get_history(self):
+        return list(self.history)
+
+    def get_last_metrics(self):
+        if self.last_metrics is None:
+            return None
+        return dict(self.last_metrics)
 
     def compute_statistics(self):
         fitness = []
@@ -243,9 +285,10 @@ class GMO:
 
     def step(self):
         if self.current_iteration >= self.max_iters:
-            return
+            return False
 
-        w = 1.0 - (self.current_iteration / self.max_iters)
+        denom = max(1, self.max_iters)
+        w = 1.0 - (self.current_iteration / denom)
 
         mu, sigma = self.compute_statistics()
         MF = self.compute_membership(mu, sigma)
@@ -262,9 +305,32 @@ class GMO:
 
         self.current_iteration += 1
 
+        best_x, best_f, best_v = self.best_solution()
+        feasible_count = self._feasible_count()
+        metrics = {
+            "iteration": self.current_iteration,
+            "w": w,
+            "mu": mu,
+            "sigma": sigma,
+            "best_f": best_f,
+            "best_violation": best_v,
+            "elite_count": len(elites),
+            "feasible_count": feasible_count,
+            "feasible_ratio": feasible_count / max(1, self.pop_size),
+            "diversity": self._population_diversity(),
+            "mean_abs_velocity": self._mean_abs_velocity(),
+            "best_x": best_x[:],
+        }
+
+        self.last_metrics = metrics
+        if self.track_history:
+            self.history.append(metrics)
+
+        return True
+
     def run(self):
-        for _ in range(self.max_iters):
-            self.step()
+        while self.step():
+            pass
 
     def best_solution(self):
         best = self.agents[0]
