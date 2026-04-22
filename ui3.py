@@ -5,14 +5,10 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
 import math
 import time
-
-# Keep your original import
 from algorithms.gmo import GMO
 
 
-# =========================
-# TAB 1 OBJECTIVE FUNCTION
-# =========================
+
 def simple_parabola(x):
     # f(x) = x^2, with 0 constraint violations
     return x[0]**2, 0
@@ -117,12 +113,10 @@ class App:
         self.init_tab1()
         self.init_tab2()
 
-    # ---------------------------------------------------------
-    # TAB 1: STEP-BY-STEP VISUALIZATION
-    # ---------------------------------------------------------
     def init_tab1(self):
         # Control Frame
         control_frame = tk.Frame(self.tab1)
+        #TODO
         control_frame.pack(side=tk.TOP, fill=tk.X, pady=10)
 
         tk.Button(control_frame, text="Initialize / Reset GMO", command=self.reset_gmo_tab1).pack(side=tk.LEFT, padx=10)
