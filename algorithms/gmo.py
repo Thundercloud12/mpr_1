@@ -1,3 +1,6 @@
+import math
+
+
 class RNG:
     def __init__(self, seed=123456):
         self.seed = seed
@@ -25,42 +28,26 @@ def abs_val(x):
 
 def sqrt(x):
     if x <= 0:
-        return 0
-    guess = x
-    for _ in range(10):
-        guess = 0.5 * (guess + x / guess)
-    return guess
+        return 0.0
+    return math.sqrt(x)
 
 
 def exp(x):
-    # Taylor approx
-    term = 1.0
-    result = 1.0
-    for i in range(1, 15):
-        term *= x / i
-        result += term
-    return result
+    # Clamp to avoid platform-dependent overflow in extreme exponentials.
+    if x > 700:
+        x = 700
+    elif x < -700:
+        x = -700
+    return math.exp(x)
 
 
 def ln(x):
-    # Simple log approximation
-    n = 100
-    result = 0.0
-    for i in range(1, n):
-        result += (1.0 / i) * ((x - 1) / x) ** i
-    return result
+    # Keep away from log(0) while preserving order for tiny values.
+    return math.log(max(x, 1e-300))
 
 
 def cos(x):
-    # Taylor series
-    term = 1.0
-    result = 1.0
-    sign = -1
-    for i in range(2, 12, 2):
-        term *= x * x / (i * (i - 1))
-        result += sign * term
-        sign *= -1
-    return result
+    return math.cos(x)
 
 
 # --------- GMO AGENT ---------
@@ -161,7 +148,14 @@ class GMO:
         for agent in self.agents:
             val = agent.f_best
             z = a_param * (val - mu)
-            mf = 1.0 / (1.0 + exp(-z))
+
+            # Numerically stable sigmoid.
+            if z >= 0:
+                mf = 1.0 / (1.0 + exp(-z))
+            else:
+                ez = exp(z)
+                mf = ez / (1.0 + ez)
+
             MF.append(mf)
 
         return MF
@@ -172,10 +166,14 @@ class GMO:
         for m in MF:
             log_total += ln(m + 1e-10)
 
+        # DFI is only used relatively (ranking/weights), so we can safely
+        # shift the exponent by a constant to keep values in range.
+        log_vals = [log_total - ln(m + 1e-10) for m in MF]
+        max_log = max(log_vals)
+
         DFI = []
-        for m in MF:
-            val = exp(log_total - ln(m + 1e-10))
-            DFI.append(val)
+        for lv in log_vals:
+            DFI.append(exp(lv - max_log))
 
         return DFI
 
