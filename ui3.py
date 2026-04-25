@@ -4,12 +4,16 @@ import tkinter as tk
 from dataclasses import dataclass
 from tkinter import messagebox, ttk
 
-import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-from algorithms.benchmarks import ObjectiveFn, PRESET_CONFIG, PRESET_NAMES
+from algorithms.benchmarks import ObjectiveFn, PRESET_CONFIG
 from algorithms.gmo import GMO
+from ui_sections import (
+    ExperimentSetupSection,
+    GraphsSection,
+    LiveMetricsSection,
+    RunLogSection,
+)
 
 RUN_LOOP_DELAY_MS = 30
 RUN_LOOP_STEPS_PER_TICK = 5
@@ -52,7 +56,7 @@ class App:
 
         self.style.configure("Header.TLabel", font=("Segoe UI", 13, "bold"))
         self.style.configure("Body.TLabel", font=("Segoe UI", 10))
-        self.style.configure("Metric.TLabel", font=("Segoe UI", 10, "bold"))
+        self.style.configure("Metric.TLabel", font=("Segoe UI", 15, "bold"))
         self.style.configure("Action.TButton", font=("Segoe UI", 10, "bold"))
 
     def _initialize_state(self) -> None:
@@ -60,7 +64,6 @@ class App:
         self.is_running = False
         self.run_after_id = None
         self.run_start_time = None
-        self.landscape_cache = None
 
     def _build_layout(self) -> None:
         self.tab_control = ttk.Notebook(self.root)
@@ -81,195 +84,29 @@ class App:
         right_panel = ttk.Frame(container)
         right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
-        self._build_controls_panel(left_panel)
-        self._build_log_panel(left_panel)
-        self._build_metrics_panel(right_panel)
-        self._build_plot_panel(right_panel)
+        self.live_metrics = LiveMetricsSection(right_panel)
+        self.graphs = GraphsSection(right_panel)
 
-        self.on_preset_changed()
-        self._clear_plots()
-
-    # ---------------------------------------------------------
-    # UI BUILDERS
-    # ---------------------------------------------------------
-    def _build_controls_panel(self, parent: ttk.Frame) -> None:
-        controls = ttk.LabelFrame(parent, text="Experiment Setup", padding=10)
-        controls.pack(fill=tk.X, pady=(0, 10))
-        controls.columnconfigure(1, weight=1)
-
-        ttk.Label(controls, text="Preset:", style="Body.TLabel").grid(
-            row=0, column=0, sticky="w", pady=4
+        self.experiment_setup = ExperimentSetupSection(
+            parent=left_panel,
+            on_initialize=self.initialize_run,
+            on_step=self.step_run,
+            on_run=self.start_run,
+            on_preset_changed=self._on_preset_changed,
+            default_population=DEFAULT_POPULATION_SIZE,
+            default_iterations=DEFAULT_ITERATIONS,
+            default_custom_expression=DEFAULT_CUSTOM_EXPRESSION,
         )
-        self.preset_var = tk.StringVar(value="Sphere")
-        self.preset_combo = ttk.Combobox(
-            controls,
-            textvariable=self.preset_var,
-            values=PRESET_NAMES,
-            width=24,
-            state="readonly",
-        )
-        self.preset_combo.grid(row=0, column=1, sticky="w", pady=4)
-        self.preset_combo.bind("<<ComboboxSelected>>", self.on_preset_changed)
+        self.run_log = RunLogSection(left_panel)
 
-        ttk.Label(controls, text="Objective Function f(x):", style="Body.TLabel").grid(
-            row=1, column=0, sticky="w", pady=4
-        )
-        self.func_entry = ttk.Entry(controls, width=40)
-        self.func_entry.grid(row=1, column=1, sticky="ew", pady=4)
+        self.graphs.clear()
 
-        ttk.Label(controls, text="Dimensions:", style="Body.TLabel").grid(
-            row=2, column=0, sticky="w", pady=4
-        )
-        self.dim_entry = ttk.Entry(controls, width=12)
-        self.dim_entry.grid(row=2, column=1, sticky="w", pady=4)
-
-        ttk.Label(controls, text="Bounds (min,max;...):", style="Body.TLabel").grid(
-            row=3, column=0, sticky="w", pady=4
-        )
-        self.bounds_entry = ttk.Entry(controls, width=40)
-        self.bounds_entry.grid(row=3, column=1, sticky="ew", pady=4)
-
-        ttk.Label(controls, text="Population Size:", style="Body.TLabel").grid(
-            row=4, column=0, sticky="w", pady=4
-        )
-        self.pop_entry = ttk.Entry(controls, width=12)
-        self.pop_entry.grid(row=4, column=1, sticky="w", pady=4)
-
-        ttk.Label(controls, text="Iterations:", style="Body.TLabel").grid(
-            row=5, column=0, sticky="w", pady=4
-        )
-        self.iter_entry = ttk.Entry(controls, width=12)
-        self.iter_entry.grid(row=5, column=1, sticky="w", pady=4)
-
-        ttk.Label(controls, text="Seed:", style="Body.TLabel").grid(
-            row=6, column=0, sticky="w", pady=4
-        )
-        self.seed_entry = ttk.Entry(controls, width=12)
-        self.seed_entry.grid(row=6, column=1, sticky="w", pady=4)
-
-        run_buttons = ttk.Frame(controls)
-        run_buttons.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(10, 4))
-        ttk.Button(
-            run_buttons,
-            text="Initialize",
-            command=self.initialize_run,
-            style="Action.TButton",
-        ).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(
-            run_buttons,
-            text="Step",
-            command=self.step_run,
-            style="Action.TButton",
-        ).pack(side=tk.LEFT, padx=6)
-        ttk.Button(
-            run_buttons,
-            text="Run",
-            command=self.start_run,
-            style="Action.TButton",
-        ).pack(side=tk.LEFT, padx=6)
-
-        transport_buttons = ttk.Frame(controls)
-        transport_buttons.grid(row=8, column=0, columnspan=2, sticky="ew", pady=4)
-        ttk.Button(transport_buttons, text="Pause", command=self.pause_run).pack(
-            side=tk.LEFT, padx=(0, 6)
-        )
-        ttk.Button(transport_buttons, text="Resume", command=self.resume_run).pack(
-            side=tk.LEFT, padx=6
-        )
-        ttk.Button(transport_buttons, text="Reset", command=self.reset_run).pack(
-            side=tk.LEFT, padx=6
-        )
-
-    def _build_log_panel(self, parent: ttk.Frame) -> None:
-        log_frame = ttk.LabelFrame(parent, text="Run Log", padding=8)
-        log_frame.pack(fill=tk.BOTH, expand=True)
-
-        self.log_output = tk.Text(log_frame, height=18, font=("Courier New", 11), wrap="word")
-        self.log_output.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        scrollbar = ttk.Scrollbar(log_frame, command=self.log_output.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.log_output.config(yscrollcommand=scrollbar.set)
-
-    def _build_metrics_panel(self, parent: ttk.Frame) -> None:
-        metrics_frame = ttk.LabelFrame(parent, text="Live Metrics", padding=10)
-        metrics_frame.pack(fill=tk.X, pady=(0, 10))
-
-        self.metric_vars = {
-            "iteration": tk.StringVar(),
-            "best": tk.StringVar(),
-            "violation": tk.StringVar(),
-            "feasible": tk.StringVar(),
-            "stats": tk.StringVar(),
-            "elites": tk.StringVar(),
-            "diversity": tk.StringVar(),
-            "elapsed": tk.StringVar(),
-        }
-        self._set_metric_defaults()
-
-        metric_order = [
-            "iteration",
-            "best",
-            "violation",
-            "feasible",
-            "stats",
-            "elites",
-            "diversity",
-            "elapsed",
-        ]
-
-        for idx, metric_key in enumerate(metric_order):
-            ttk.Label(
-                metrics_frame,
-                textvariable=self.metric_vars[metric_key],
-                style="Metric.TLabel",
-            ).grid(row=idx // 4, column=idx % 4, sticky="w", padx=12, pady=3)
-
-    def _build_plot_panel(self, parent: ttk.Frame) -> None:
-        plot_frame = ttk.Frame(parent)
-        plot_frame.pack(fill=tk.BOTH, expand=True)
-
-        self.figure = plt.figure(figsize=(8, 9.5))
-        grid = self.figure.add_gridspec(3, 1, height_ratios=[1.45, 1.0, 1.0])
-        self.ax_obj = self.figure.add_subplot(grid[0, 0])
-        self.ax_convergence = self.figure.add_subplot(grid[1, 0])
-        self.ax_feasibility = self.figure.add_subplot(grid[2, 0], sharex=self.ax_convergence)
-        self.figure.tight_layout(pad=2.0)
-
-        self.canvas = FigureCanvasTkAgg(self.figure, master=plot_frame)
-        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+    def _on_preset_changed(self) -> None:
+        self.graphs.reset_landscape_cache()
 
     # ---------------------------------------------------------
     # INPUT HELPERS
     # ---------------------------------------------------------
-    def _set_entry_if_empty(self, entry_widget: ttk.Entry, value: str) -> None:
-        if not entry_widget.get().strip():
-            entry_widget.insert(0, value)
-
-    def _replace_entry_text(self, entry_widget: ttk.Entry, value: str) -> None:
-        entry_widget.delete(0, tk.END)
-        entry_widget.insert(0, value)
-
-    def on_preset_changed(self, _event=None) -> None:
-        preset = self.preset_var.get()
-        self.landscape_cache = None
-        self.func_entry.config(state="normal")
-
-        if preset == "Custom":
-            self._set_entry_if_empty(self.func_entry, DEFAULT_CUSTOM_EXPRESSION)
-            self._set_entry_if_empty(self.dim_entry, "2")
-            self._set_entry_if_empty(self.bounds_entry, "-5.12,5.12;-5.12,5.12")
-        else:
-            cfg = PRESET_CONFIG[preset]
-            self._replace_entry_text(self.func_entry, cfg.expression)
-            self.func_entry.config(state="disabled")
-            self._replace_entry_text(self.dim_entry, str(cfg.dim))
-            self._replace_entry_text(self.bounds_entry, cfg.bounds)
-
-        self._set_entry_if_empty(self.pop_entry, DEFAULT_POPULATION_SIZE)
-        self._set_entry_if_empty(self.iter_entry, DEFAULT_ITERATIONS)
-        self._set_entry_if_empty(self.seed_entry, DEFAULT_SEED)
-
     def _parse_bounds(self, bounds_text: str, dim: int) -> list[tuple[float, float]]:
         tokens = [token.strip() for token in bounds_text.split(";") if token.strip()]
         if len(tokens) == 1 and dim > 1:
@@ -294,12 +131,13 @@ class App:
         return parsed_bounds
 
     def _read_run_config(self) -> RunConfig:
-        preset = self.preset_var.get()
-        function_expression = self.func_entry.get().strip()
-        dim = int(self.dim_entry.get())
-        population_size = int(self.pop_entry.get())
-        iterations = int(self.iter_entry.get())
-        seed = int(self.seed_entry.get())
+        values = self.experiment_setup.get_values()
+        preset = values["preset"]
+        function_expression = values["function_expression"]
+        dim = int(values["dim"])
+        population_size = int(values["population_size"])
+        iterations = int(values["iterations"])
+        seed = int(DEFAULT_SEED)
 
         if dim <= 0:
             raise ValueError("Dimensions must be positive.")
@@ -308,7 +146,7 @@ class App:
         if iterations <= 0:
             raise ValueError("Iterations must be positive.")
 
-        bounds = self._parse_bounds(self.bounds_entry.get(), dim)
+        bounds = self._parse_bounds(values["bounds"], dim)
         return RunConfig(
             preset=preset,
             function_expression=function_expression,
@@ -363,8 +201,7 @@ class App:
         return "[" + ", ".join(shown) + "]"
 
     def _append_log(self, message: str) -> None:
-        self.log_output.insert(tk.END, message + "\n")
-        self.log_output.see(tk.END)
+        self.run_log.append(message)
 
     def _show_solution_summary(self) -> None:
         if self.gmo is None:
@@ -376,260 +213,41 @@ class App:
         self._append_log(f"Best violation: {best_v:.8f}")
         self._append_log(f"Best x: {self._format_vector(best_x)}")
 
-    def _set_metric_defaults(self) -> None:
-        self.metric_vars["iteration"].set("Iteration: 0/0")
-        self.metric_vars["best"].set("Best Objective: -")
-        self.metric_vars["violation"].set("Best Violation: -")
-        self.metric_vars["feasible"].set("Feasible Agents: -")
-        self.metric_vars["stats"].set("mu/sigma: -")
-        self.metric_vars["elites"].set("Elites: -")
-        self.metric_vars["diversity"].set("Diversity: -")
-        self.metric_vars["elapsed"].set("Elapsed: 0.00s")
-
-    # ---------------------------------------------------------
-    # PLOTTING
-    # ---------------------------------------------------------
-    def _clear_plots(self) -> None:
-        self.ax_obj.clear()
-        self.ax_convergence.clear()
-        self.ax_feasibility.clear()
-
-        self.ax_obj.set_title("Objective Function and Agents")
-        self.ax_obj.set_xlabel("x[0]")
-        self.ax_obj.set_ylabel("f(x)")
-        self.ax_obj.grid(True, linestyle="--", alpha=0.35)
-
-        self.ax_convergence.set_title("Convergence (Best Objective)")
-        self.ax_convergence.set_ylabel("Best Cost")
-        self.ax_convergence.grid(True, linestyle="--", alpha=0.4)
-
-        self.ax_feasibility.set_title("Feasibility and Exploration")
-        self.ax_feasibility.set_xlabel("Iteration")
-        self.ax_feasibility.set_ylabel("Percent")
-        self.ax_feasibility.set_ylim(0, 105)
-        self.ax_feasibility.grid(True, linestyle="--", alpha=0.4)
-
-        self.canvas.draw()
-
-    def _safe_objective_value(self, point) -> float:
-        if self.gmo is None:
-            return np.nan
-
-        try:
-            value, _ = self.gmo.obj_fn(point)
-            numeric_value = float(value)
-            if not np.isfinite(numeric_value):
-                return np.nan
-            return numeric_value
-        except Exception:
-            return np.nan
-
-    def _build_landscape_cache(self):
-        if self.gmo is None:
-            return None
-
-        low, high = self.gmo.bounds[0]
-        x_values = np.linspace(low, high, 260)
-
-        base_point = []
-        for bound_low, bound_high in self.gmo.bounds:
-            base_point.append((bound_low + bound_high) * 0.5)
-
-        y_values = []
-        for x in x_values:
-            point = base_point[:]
-            point[0] = x
-            y_values.append(self._safe_objective_value(point))
-
-        return {"x": x_values, "y": np.array(y_values, dtype=float)}
-
-    def _draw_objective_plot(self, history) -> None:
-        self.ax_obj.clear()
-
-        if self.gmo is None:
-            self.ax_obj.set_title("Objective Function and Agents")
-            self.ax_obj.text(
-                0.5,
-                0.5,
-                "Initialize run to display objective graph",
-                transform=self.ax_obj.transAxes,
-                ha="center",
-                va="center",
-            )
-            self.ax_obj.set_xticks([])
-            self.ax_obj.set_yticks([])
-            return
-
-        if self.landscape_cache is None:
-            self.landscape_cache = self._build_landscape_cache()
-
-        if self.landscape_cache is None:
-            self.ax_obj.set_title("Objective Function and Agents")
-            self.ax_obj.text(
-                0.5,
-                0.5,
-                "Unable to evaluate objective landscape",
-                transform=self.ax_obj.transAxes,
-                ha="center",
-                va="center",
-            )
-            return
-
-        x_values = self.landscape_cache["x"]
-        y_values = self.landscape_cache["y"]
-        current_best = history[-1] if history else None
-
-        self.ax_obj.plot(
-            x_values,
-            y_values,
-            color="#3a86ff",
-            linewidth=2.0,
-            alpha=0.85,
-            label="Objective",
-        )
-
-        agent_x = [agent.x[0] for agent in self.gmo.agents]
-        agent_y = [self._safe_objective_value(agent.x) for agent in self.gmo.agents]
-        self.ax_obj.scatter(agent_x, agent_y, color="red", s=36, zorder=5, label="Agents")
-
-        if current_best is not None:
-            self.ax_obj.scatter(
-                current_best["best_x"][0],
-                current_best["best_f"],
-                color="yellow",
-                edgecolors="black",
-                s=170,
-                marker="*",
-                zorder=8,
-                label="Current Best So Far",
-            )
-
-        title = "Objective Function and Agents"
-        if self.gmo.dim > 1:
-            title += " (x[0] slice)"
-        self.ax_obj.set_title(title)
-        self.ax_obj.set_xlabel("x[0]")
-        self.ax_obj.set_ylabel("f(x)")
-        self.ax_obj.grid(True, linestyle="--", alpha=0.35)
-        self.ax_obj.legend(loc="upper right")
-
-        if current_best is None:
-            self.ax_obj.text(
-                0.02,
-                0.95,
-                "Best star appears after first optimization step",
-                transform=self.ax_obj.transAxes,
-                ha="left",
-                va="top",
-                bbox={
-                    "boxstyle": "round,pad=0.25",
-                    "facecolor": "#f8f9fa",
-                    "edgecolor": "#cfd8dc",
-                },
-            )
-
-    def _draw_progress_plots(self, history) -> None:
-        self.ax_convergence.clear()
-        self.ax_feasibility.clear()
-
-        if history:
-            iterations = [item["iteration"] for item in history]
-            best_cost = [item["best_f"] for item in history]
-            feasible_percent = [100.0 * item["feasible_ratio"] for item in history]
-            exploration_percent = [100.0 * item["w"] for item in history]
-
-            self.ax_convergence.plot(iterations, best_cost, color="#2a9d8f", linewidth=2.0)
-            self.ax_feasibility.plot(
-                iterations,
-                feasible_percent,
-                color="#e76f51",
-                linewidth=2.0,
-                label="Feasible %",
-            )
-            self.ax_feasibility.plot(
-                iterations,
-                exploration_percent,
-                color="#264653",
-                linewidth=1.8,
-                label="Exploration Weight x100",
-            )
-            self.ax_feasibility.legend(loc="upper right")
-
-        self.ax_convergence.set_title("Convergence (Best Objective)")
-        self.ax_convergence.set_ylabel("Best Cost")
-        self.ax_convergence.grid(True, linestyle="--", alpha=0.4)
-
-        self.ax_feasibility.set_title("Feasibility and Exploration")
-        self.ax_feasibility.set_xlabel("Iteration")
-        self.ax_feasibility.set_ylabel("Percent")
-        self.ax_feasibility.set_ylim(0, 105)
-        self.ax_feasibility.grid(True, linestyle="--", alpha=0.4)
-
     def _update_metrics(self) -> None:
         if self.gmo is None:
-            self._set_metric_defaults()
+            self.live_metrics.set_defaults()
             return
 
         metrics = self.gmo.get_last_metrics()
         if metrics is None:
-            _best_x, best_f, best_v = self.gmo.best_solution()
-            feasible_count = sum(
-                1 for agent in self.gmo.agents if agent.violation_best == 0
-            )
-
-            self.metric_vars["iteration"].set(f"Iteration: 0/{self.gmo.max_iters}")
-            self.metric_vars["best"].set(f"Best Objective: {best_f:.8f}")
-            self.metric_vars["violation"].set(f"Best Violation: {best_v:.8f}")
-            self.metric_vars["feasible"].set(
-                f"Feasible Agents: {feasible_count}/{self.gmo.pop_size}"
-            )
-            self.metric_vars["stats"].set("mu/sigma: -")
-            self.metric_vars["elites"].set("Elites: -")
-            self.metric_vars["diversity"].set("Diversity: -")
-            self.metric_vars["elapsed"].set("Elapsed: 0.00s")
+            _best_x, best_f, _best_v = self.gmo.best_solution()
+            self.live_metrics.set_initial(self.gmo.max_iters, best_f)
             return
 
         elapsed = 0.0
         if self.run_start_time is not None:
             elapsed = time.time() - self.run_start_time
-
-        self.metric_vars["iteration"].set(
-            f"Iteration: {metrics['iteration']}/{self.gmo.max_iters}"
-        )
-        self.metric_vars["best"].set(f"Best Objective: {metrics['best_f']:.8f}")
-        self.metric_vars["violation"].set(
-            f"Best Violation: {metrics['best_violation']:.8f}"
-        )
-        self.metric_vars["feasible"].set(
-            f"Feasible Agents: {metrics['feasible_count']}/{self.gmo.pop_size}"
-        )
-        self.metric_vars["stats"].set(
-            f"mu/sigma: {metrics['mu']:.5f}/{metrics['sigma']:.5f}"
-        )
-        self.metric_vars["elites"].set(f"Elites: {metrics['elite_count']}")
-        self.metric_vars["diversity"].set(
-            f"Diversity: {metrics['diversity']:.5f} | mean|v|: {metrics['mean_abs_velocity']:.5f}"
-        )
-        self.metric_vars["elapsed"].set(f"Elapsed: {elapsed:.2f}s")
+        self.live_metrics.set_runtime(metrics, self.gmo.max_iters, elapsed)
 
     def refresh_view(self) -> None:
         if self.gmo is None:
-            self._set_metric_defaults()
-            self._clear_plots()
+            self.live_metrics.set_defaults()
+            self.graphs.clear()
             return
 
         history = self.gmo.get_history()
-        self._draw_objective_plot(history)
-        self._draw_progress_plots(history)
+        self.graphs.refresh(self.gmo, history)
         self._update_metrics()
-        self.canvas.draw()
 
     # ---------------------------------------------------------
     # RUN CONTROLS
     # ---------------------------------------------------------
     def initialize_run(self) -> None:
         try:
-            self.pause_run(silent=True)
+            if self.run_after_id is not None:
+                self.root.after_cancel(self.run_after_id)
+                self.run_after_id = None
+            self.is_running = False
             config = self._read_run_config()
             objective_fn, problem_name = self._build_objective_function(
                 config.preset, config.function_expression
@@ -646,9 +264,9 @@ class App:
             )
 
             self.run_start_time = time.time()
-            self.landscape_cache = None
+            self.graphs.reset_landscape_cache()
 
-            self.log_output.delete("1.0", tk.END)
+            self.run_log.clear()
             self._append_log(f"Initialized run: {problem_name}")
             self._append_log(
                 f"dim={config.dim}, pop={config.population_size}, iters={config.iterations}, seed={config.seed}"
@@ -721,7 +339,7 @@ class App:
                 return
 
         if self.gmo.current_iteration >= self.gmo.max_iters:
-            self._append_log("Run already completed. Use Reset or Initialize.")
+            self._append_log("Run already completed. Use Initialize.")
             return
 
         if self.is_running:
@@ -730,42 +348,6 @@ class App:
         self.is_running = True
         self._append_log("Run started.")
         self._run_loop()
-
-    def pause_run(self, silent: bool = False) -> None:
-        if self.run_after_id is not None:
-            self.root.after_cancel(self.run_after_id)
-            self.run_after_id = None
-
-        was_running = self.is_running
-        self.is_running = False
-
-        if was_running and not silent:
-            self._append_log("Run paused.")
-
-    def resume_run(self) -> None:
-        if self.gmo is None:
-            self._append_log("Initialize first.")
-            return
-
-        if self.gmo.current_iteration >= self.gmo.max_iters:
-            self._append_log("Run already completed.")
-            return
-
-        if self.is_running:
-            return
-
-        self.is_running = True
-        self._append_log("Run resumed.")
-        self._run_loop()
-
-    def reset_run(self) -> None:
-        self.pause_run(silent=True)
-        self.gmo = None
-        self.run_start_time = None
-        self.landscape_cache = None
-        self.log_output.delete("1.0", tk.END)
-        self._append_log("State reset. Configure and initialize a new run.")
-        self.refresh_view()
 
 
 if __name__ == "__main__":
