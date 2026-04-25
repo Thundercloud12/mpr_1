@@ -35,6 +35,15 @@ def rastrigin_objective(x):
     return total, 0
 
 
+def shifted_rastrigin_objective(x, shift=5.0, bias=100.0):
+    n = len(x)
+    total = bias + 10.0 * n
+    for v in x:
+        z = v - shift
+        total += z * z - 10.0 * math.cos(2.0 * math.pi * z)
+    return total, 0
+
+
 def ackley_objective(x):
     n = len(x)
     if n == 0:
@@ -66,6 +75,12 @@ PRESET_CONFIG = {
         "bounds": "-5.12,5.12;-5.12,5.12",
         "expression": "10*len(x) + sum(v*v - 10*math.cos(2*math.pi*v) for v in x)",
         "fn": rastrigin_objective,
+    },
+    "Shifted Rastrigin": {
+        "dim": 2,
+        "bounds": "-5.12,15.12;-5.12,15.12",
+        "expression": "100 + 10*len(x) + sum((v-5)**2 - 10*math.cos(2*math.pi*(v-5)) for v in x)",
+        "fn": shifted_rastrigin_objective,
     },
     "Ackley": {
         "dim": 2,
@@ -192,7 +207,7 @@ class App:
         self.preset_combo = ttk.Combobox(
             controls,
             textvariable=self.preset_var,
-            values=["Sphere", "Rosenbrock", "Rastrigin", "Ackley", "Custom"],
+            values=["Sphere", "Rosenbrock", "Rastrigin", "Shifted Rastrigin", "Ackley", "Custom"],
             width=24,
             state="readonly",
         )
@@ -344,7 +359,8 @@ class App:
             return PRESET_CONFIG[preset]["fn"], preset
 
         def custom_obj(x):
-            allowed_locals = {
+            safe_globals = {
+                "__builtins__": {},
                 "x": x,
                 "math": math,
                 "np": np,
@@ -353,8 +369,30 @@ class App:
                 "max": max,
                 "abs": abs,
                 "len": len,
+                "range": range,
+                "float": float,
+                "int": int,
+                "pi": math.pi,
+                "e": math.e,
             }
-            value = eval(func_str, {"__builtins__": None}, allowed_locals)
+
+            # Use globals for expression names so comprehensions/generators can resolve them.
+            try:
+                value = eval(func_str, safe_globals, {})
+            except Exception as exc:
+                raise ValueError(f"Function evaluation error: {exc}") from exc
+
+            try:
+                numeric_value = float(value)
+            except Exception as exc:
+                raise ValueError(
+                    "Objective must evaluate to one numeric value."
+                ) from exc
+
+            if not math.isfinite(numeric_value):
+                raise ValueError("Objective must evaluate to a finite number.")
+
+            value = numeric_value
             return float(value), 0
 
         return custom_obj, "Custom"
